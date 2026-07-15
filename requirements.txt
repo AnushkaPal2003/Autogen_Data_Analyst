@@ -1,0 +1,10 @@
+ag2
+pandas
+matplotlib
+fastapi
+uvicorn[standard]
+python-multipart
+python-dotenv
+streamlit
+requests
+ 
