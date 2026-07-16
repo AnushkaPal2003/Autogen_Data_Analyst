@@ -43,7 +43,6 @@ User Question + CSV
 | Analysis           | pandas, matplotlib                 |
 | Backend API        | FastAPI                            |
 | Frontend           | Streamlit                          |
-| Container          | Docker + Docker Compose            |
 
 ---
 
@@ -60,15 +59,9 @@ autogen_data_analyst/
 ├── frontend/
 │   └── app.py           -> Streamlit UI
 ├── requirements.txt
-├── Dockerfile
-├── docker-compose.yml
 └── .env.example
 ```
 
-All application code is written as plain functions — no custom classes are
-defined by this project; AutoGen's own agent classes are used directly.
-
----
 
 ## Setup
 
@@ -98,21 +91,4 @@ cd frontend
 streamlit run app.py
 ```
 
-**5. Or run everything with Docker**
-```bash
-docker-compose up --build
-```
 Backend: http://localhost:8000 · Frontend: http://localhost:8501
-
----
-
-## Notes on Production Use
-
-- `LocalCommandLineCodeExecutor` runs generated code as a local subprocess.
-  For public-facing deployments with untrusted CSV/question input, swap it
-  for `autogen.coding.DockerCommandLineCodeExecutor` in `backend/executor.py`
-  so each analysis runs inside an isolated container instead of the host.
-- Each analysis run gets its own working directory under `runs/<run_id>/`,
-  so concurrent requests don't overwrite each other's charts or data.
-- `MAX_TURNS` bounds how many times the analyst and executor can go back and
-  forth, so a stuck agent loop cannot run indefinitely.
