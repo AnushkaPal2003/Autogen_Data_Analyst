@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 
 from config import (
@@ -7,30 +8,33 @@ from config import (
     CODE_TIMEOUT_SECONDS,
     WORK_DIR_ROOT,
 )
+
 from agents import (
     build_data_analyst_agent,
     build_executor_agent,
     build_reviewer_agent,
 )
+
 from executor import build_executor
 
 
 def run_analysis(csv_path: str, question: str) -> dict:
     """
-    Multi-agent pipeline
+    Runs the complete AG2 pipeline.
 
-    1. Data Analyst writes pandas/matplotlib code.
-    2. Executor executes the code.
-    3. Analyst iterates until satisfied.
-    4. Reviewer validates the entire analysis.
+    Flow
 
-    Returns:
-        summary
-        chart_path
-        generated_code
-        transcript
-        review_feedback
-        approved
+    User
+      ↓
+    Analyst
+      ↓
+    Executor
+      ↓
+    Analyst
+      ↓
+    Reviewer
+      ↓
+    API Response
     """
 
     run_id = str(uuid.uuid4())[:8]
@@ -46,44 +50,90 @@ def run_analysis(csv_path: str, question: str) -> dict:
     )
 
     analyst = build_data_analyst_agent(LLM_CONFIG)
-    code_runner = build_executor_agent(executor)
+
+    code_executor = build_executor_agent(executor)
+
     reviewer = build_reviewer_agent(LLM_CONFIG)
 
     task = f"""
-You are a professional Data Analyst.
+You are given a CSV dataset.
 
-CSV file:
+CSV Path
+
 {csv_path}
 
-User Question:
+User Question
+
 {question}
 
-Instructions:
+================================================
 
-1. Load the CSV using pandas.
-2. Perform ALL calculations using Python.
-3. Never guess.
-4. Never rely on prior knowledge.
-5. Base every conclusion ONLY on computed values.
-6. If correlation is requested, compute the correlation matrix.
-7. If statistics are requested, calculate them.
-8. If a chart is useful, generate it using matplotlib and save it as:
+IMPORTANT
+
+Read the user's request carefully.
+
+Your answer MUST satisfy EVERY requirement.
+
+Examples
+
+If user asks
+
+Generate heatmap
+
+Generate heatmap.
+
+If user asks
+
+Give 5 insights
+
+Return EXACTLY FIVE insights.
+
+If user asks
+
+Find top 10
+
+Return EXACTLY TEN.
+
+Never ignore any request.
+
+================================================
+
+Execution Rules
+
+1. Load CSV with pandas.
+
+2. Inspect available columns.
+
+3. Perform calculations.
+
+4. Never guess.
+
+5. Never use prior knowledge.
+
+6. Base conclusions ONLY on computed values.
+
+7. Save every chart as
 
 chart.png
 
-9. Always execute the code before giving conclusions.
+8. Execute Python before writing conclusions.
 
-10. Your final response should contain:
+================================================
 
-- Analysis
-- Key findings
-- Numerical evidence
-- Short summary
+Final Response
 
-Do NOT invent numbers.
+Executive Summary
+
+Key Insights
+
+Recommendations (if requested)
+
+End with
+
+TERMINATE
 """
 
-    chat_result = code_runner.initiate_chat(
+    chat_result = code_executor.initiate_chat(
         analyst,
         message=task,
         max_turns=MAX_TURNS,
@@ -92,55 +142,84 @@ Do NOT invent numbers.
 
     transcript = chat_result.chat_history
 
-    final_summary = (
-        chat_result.summary
-        or _last_message_from(transcript, "data_analyst")
-    )
+    conversation = []
 
     generated_code = ""
 
-    conversation = []
+    execution_output = ""
+
+    final_summary = ""
 
     for msg in transcript:
 
-        name = msg.get("name", "unknown")
+        name = msg.get("name", "")
+
         content = msg.get("content", "")
 
         conversation.append(
-            f"{name}:\n{content}"
+            f"{name}\n{content}"
         )
 
         if "```python" in content:
             generated_code = content
 
+        if name == "code_executor":
+            execution_output += "\n" + content
+
     conversation = "\n\n".join(conversation)
 
-    review_prompt = f"""
-You are a Senior Data Scientist.
+    final_summary = _extract_final_summary(transcript)
 
-Your task is to review the analyst's work.
+    chart_path = os.path.join(
+        work_dir,
+        "chart.png",
+    )
+        review_prompt = f"""
+You are reviewing a completed data analysis.
 
-Question:
+User Question
 
 {question}
 
-Conversation:
+==============================
 
-{conversation}
-
-Analyst Summary:
+Analyst Final Answer
 
 {final_summary}
 
-Instructions:
+==============================
 
-- Verify whether the conclusions follow from the executed Python output.
-- Reject unsupported claims.
-- Reject hallucinations.
-- Verify statistics and correlations.
-- If evidence is insufficient, reject.
+Execution Output
 
-Reply ONLY in this format:
+{execution_output}
+
+==============================
+
+Review Checklist
+
+1. Did the analyst answer every part of the user's question?
+
+2. If the user requested N insights,
+were exactly N provided?
+
+3. Are conclusions supported by execution output?
+
+4. Are statistics actually computed?
+
+5. Are correlations actually computed?
+
+6. If a chart was requested,
+did the analyst discuss it?
+
+7. Reject if Python code appears.
+
+8. Reject if traceback appears.
+
+9. Reject if installation logs appear.
+
+10. Reject hallucinations.
+
+Reply ONLY in this format
 
 APPROVED
 
@@ -148,7 +227,7 @@ or
 
 REJECTED
 
-Then explain your reasoning.
+Then explain why.
 """
 
     review_reply = reviewer.generate_reply(
@@ -165,14 +244,13 @@ Then explain your reasoning.
 
     review_reply = review_reply or ""
 
-    approved = "APPROVED" in review_reply.upper()
-
-    chart_path = os.path.join(work_dir, "chart.png")
+    approved = review_reply.upper().startswith("APPROVED")
 
     return {
         "run_id": run_id,
         "summary": final_summary,
         "generated_code": generated_code,
+        "execution_output": execution_output,
         "chart_path": chart_path if os.path.exists(chart_path) else None,
         "approved": approved,
         "review_feedback": review_reply,
@@ -180,17 +258,86 @@ Then explain your reasoning.
     }
 
 
-def _last_message_from(transcript, sender_name):
+def _extract_final_summary(transcript):
     """
-    Returns the last message sent by an agent.
+    Returns the analyst's final business summary only.
+
+    Removes:
+    - python code
+    - TERMINATE
+    - traceback
+    - pip install logs
     """
 
     for msg in reversed(transcript):
 
-        if (
-            msg.get("name") == sender_name
-            and msg.get("content")
-        ):
-            return msg["content"]
+        if msg.get("name") != "data_analyst":
+            continue
+
+        content = msg.get("content", "")
+
+        if not content:
+            continue
+
+        # remove python blocks
+        content = re.sub(
+            r"```python.*?```",
+            "",
+            content,
+            flags=re.DOTALL,
+        )
+
+        # remove any fenced code
+        content = re.sub(
+            r"```.*?```",
+            "",
+            content,
+            flags=re.DOTALL,
+        )
+
+        # remove TERMINATE
+        content = re.sub(
+            r"TERMINATE",
+            "",
+            content,
+            flags=re.IGNORECASE,
+        )
+
+        # remove traceback
+        content = re.sub(
+            r"Traceback[\s\S]*",
+            "",
+            content,
+            flags=re.MULTILINE,
+        )
+
+        # remove pip install lines
+        cleaned = []
+
+        for line in content.splitlines():
+
+            lower = line.lower()
+
+            if "pip install" in lower:
+                continue
+
+            if "subprocess.check_call" in lower:
+                continue
+
+            if "sys.executable" in lower:
+                continue
+
+            if line.strip().startswith("import "):
+                continue
+
+            if line.strip().startswith("from "):
+                continue
+
+            cleaned.append(line)
+
+        content = "\n".join(cleaned).strip()
+
+        if content:
+            return content
 
     return ""
