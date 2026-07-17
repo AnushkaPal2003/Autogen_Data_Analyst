@@ -2,7 +2,7 @@ import os
 import requests
 import streamlit as st
 
-BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+BACKEND_URL = st.secrets.get("BACKEND_URL", "http://localhost:8000")
 
 st.set_page_config(page_title="AutoGen Data Analyst", page_icon="📊", layout="centered")
 
