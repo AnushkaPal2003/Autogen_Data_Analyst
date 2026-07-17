@@ -46,6 +46,10 @@ async def analyze(question: str = Form(...), file: UploadFile = File(...)):
 
     try:
         result = run_analysis(csv_path=csv_path, question=question)
+
+        print("=" * 80)
+        print(result["transcript"])
+        print("=" * 80)
     except Exception as exc:
         print("----- /analyze failed, full traceback below -----")
         traceback.print_exc()
