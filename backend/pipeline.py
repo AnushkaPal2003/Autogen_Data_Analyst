@@ -137,7 +137,7 @@ TERMINATE
         analyst,
         message=task,
         max_turns=MAX_TURNS,
-        summary_method="last_msg",
+        summary_method="reflection_with_llm",
     )
 
     transcript = chat_result.chat_history
@@ -174,7 +174,7 @@ TERMINATE
         work_dir,
         "chart.png",
     )
-        review_prompt = f"""
+    review_prompt = f"""
 You are reviewing a completed data analysis.
 
 User Question
